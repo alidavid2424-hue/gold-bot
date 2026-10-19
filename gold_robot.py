@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 headers = {"User-Agent": "Mozilla/5.0"}
 
 MIN_RISK = 3.0
+ENTRY_DIFF = 15.0
+MAX_HOURS = 4
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 NTFY_URL = "https://ntfy.sh/" + NTFY_TOPIC
 STATE_FILE = "last_signal.txt"
@@ -13,15 +15,22 @@ STATE_FILE = "last_signal.txt"
 def load_last():
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return f.read().strip()
+            text = f.read().strip()
     except Exception:
-        return ""
+        return "", 0.0, 0.0
+    parts = text.split("|")
+    if len(parts) == 3:
+        try:
+            return parts[0], float(parts[1]), float(parts[2])
+        except Exception:
+            return parts[0], 0.0, 0.0
+    return text, 0.0, 0.0
 
 
-def save_last(value):
+def save_last(direction, entry, sent_time):
     try:
         with open(STATE_FILE, "w", encoding="utf-8") as f:
-            f.write(value)
+            f.write(direction + "|" + str(entry) + "|" + str(sent_time))
     except Exception as e:
         print("خطا در ذخیره وضعیت:", e)
 
@@ -43,7 +52,7 @@ def send_notify(text):
 
 
 def analyze():
-    last_signal = load_last()
+    last_dir, last_entry, last_sent_time = load_last()
 
     url = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1h&range=1mo"
     r = requests.get(url, headers=headers, timeout=20)
@@ -183,16 +192,26 @@ def analyze():
     print("روند ۴ ساعته:", trend4)
     print("روند ۱ ساعته:", trend1)
     if has_signal:
+        entry_spot = round(entry - offset, 1)
         print("جهت احتمالی:", trend4)
-        print("Entry:", round(entry - offset, 1))
+        print("Entry:", entry_spot)
         print("SL:", round(sl - offset, 1))
         print("TP:", round(tp - offset, 1))
         print("ریسک:", round(risk, 1))
         print("ریسک به ریوارد: 1 به 2")
-        if trend4 != last_signal:
+
+        should_send = False
+        if trend4 != last_dir:
+            should_send = True
+        elif abs(entry_spot - last_entry) > ENTRY_DIFF:
+            should_send = True
+        elif now - last_sent_time > MAX_HOURS * 3600:
+            should_send = True
+
+        if should_send:
             msg = (
                 "جهت احتمالی: " + trend4 + "\n"
-                + "Entry: " + str(round(entry - offset, 1)) + "\n"
+                + "Entry: " + str(entry_spot) + "\n"
                 + "SL: " + str(round(sl - offset, 1)) + "\n"
                 + "TP: " + str(round(tp - offset, 1)) + "\n"
                 + "ریسک: " + str(round(risk, 1)) + "\n"
@@ -200,13 +219,12 @@ def analyze():
                 + "این فقط تحلیل است، سیگنال معامله نیست"
             )
             send_notify(msg)
-            save_last(trend4)
+            save_last(trend4, entry_spot, now)
         else:
             print("اعلان تکراری است، نفرستادم")
     else:
         print("NO TRADE")
         print("دلیل:", reason)
-        save_last("")
     print("این فقط تحلیل است، سیگنال معامله نیست")
     print("=============================")
 
