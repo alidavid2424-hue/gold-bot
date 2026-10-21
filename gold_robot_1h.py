@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 headers = {"User-Agent": "Mozilla/5.0"}
 
 MIN_RISK = 3.0
+MAX_AGE = 9000
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 NTFY_URL = "https://ntfy.sh/" + NTFY_TOPIC
 STATE_FILE = "last_signal_1h.txt"
@@ -110,6 +111,9 @@ def analyze():
     trend4 = trend_of(candles4h[-6:])
     trend1 = trend_of(h_closed[-6:])
 
+    age = now - (h_closed[-1][0] + 3600)
+    print("سن آخرین کندل بسته (دقیقه):", int(age / 60))
+
     rs = requests.get("https://api.gold-api.com/price/XAU", timeout=20)
     spot = rs.json()["price"]
     closes = [c for c in q["close"] if c is not None]
@@ -122,7 +126,9 @@ def analyze():
     tp = 0
     risk = 0
 
-    if trend4 == trend1 and trend4 != "خنثی":
+    if age > MAX_AGE:
+        reason = "داده ۱ ساعته کهنه است"
+    elif trend4 == trend1 and trend4 != "خنثی":
         last6 = h_closed[-6:]
         entry = last6[-1][4]
         low6 = min(x[3] for x in last6)
@@ -173,7 +179,8 @@ def analyze():
     else:
         print("NO TRADE")
         print("دلیل:", reason)
-        save_last("")
+        if age <= MAX_AGE:
+            save_last("")
     print("این فقط تحلیل است، سیگنال معامله نیست")
     print("===============================")
 
