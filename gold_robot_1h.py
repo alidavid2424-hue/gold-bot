@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 
 headers = {"User-Agent": "Mozilla/5.0"}
 
-MIN_RISK = 3.0
+MIN_RISK = 6.0
+MAX_RISK = 60.0
 MAX_AGE = 9000
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 NTFY_URL = "https://ntfy.sh/" + NTFY_TOPIC
@@ -143,6 +144,8 @@ def analyze():
             tp = entry - 2 * risk
         if risk < MIN_RISK:
             reason = "حد ضرر خیلی نزدیک است (SL too close)"
+        elif risk > MAX_RISK:
+            reason = "حد ضرر خیلی دور است (SL too far)"
         else:
             has_signal = True
 
