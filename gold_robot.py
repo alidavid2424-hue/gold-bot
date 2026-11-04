@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 headers = {"User-Agent": "Mozilla/5.0"}
 
-MIN_RISK = 3.0
+MIN_RISK = 6.0
 ENTRY_DIFF = 15.0
 MAX_HOURS = 4
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
