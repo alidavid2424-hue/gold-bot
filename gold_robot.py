@@ -5,32 +5,37 @@ from datetime import datetime, timezone
 headers = {"User-Agent": "Mozilla/5.0"}
 
 MIN_RISK = 6.0
-ENTRY_DIFF = 15.0
-MAX_HOURS = 4
+MAX_OPEN_HOURS = 48
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 NTFY_URL = "https://ntfy.sh/" + NTFY_TOPIC
 STATE_FILE = "last_signal.txt"
 
 
 def load_last():
+    # فرمت: جهت|ورود|زمان ارسال|SL|TP|پایان کندل سیگنال
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             text = f.read().strip()
     except Exception:
-        return "", 0.0, 0.0
+        return "", 0.0, 0.0, 0.0, 0.0, 0.0
     parts = text.split("|")
-    if len(parts) == 3:
+    if len(parts) == 6:
         try:
-            return parts[0], float(parts[1]), float(parts[2])
+            return (parts[0], float(parts[1]), float(parts[2]),
+                    float(parts[3]), float(parts[4]), float(parts[5]))
         except Exception:
-            return parts[0], 0.0, 0.0
-    return text, 0.0, 0.0
+            return parts[0], 0.0, 0.0, 0.0, 0.0, 0.0
+    # فرمت قدیمی (بدون SL و TP): فقط جهت را نگه می‌داریم
+    return parts[0], 0.0, 0.0, 0.0, 0.0, 0.0
 
 
-def save_last(direction, entry, sent_time):
+def save_last(direction, entry, sent_time, sl, tp, sig_end):
     try:
         with open(STATE_FILE, "w", encoding="utf-8") as f:
-            f.write(direction + "|" + str(entry) + "|" + str(sent_time))
+            f.write(
+                direction + "|" + str(entry) + "|" + str(sent_time) + "|"
+                + str(sl) + "|" + str(tp) + "|" + str(sig_end)
+            )
     except Exception as e:
         print("خطا در ذخیره وضعیت:", e)
 
@@ -51,8 +56,32 @@ def send_notify(text):
         print("خطا در ارسال اعلان:", e)
 
 
+def previous_open(last_dir, last_sl, last_tp, sig_end, m15_closed, offset, now):
+    # True یعنی سیگنال قبلی هنوز باز است (نه TP خورده نه SL)
+    if last_dir == "" or last_sl == 0 or last_tp == 0 or sig_end == 0:
+        return False
+    if now - sig_end > MAX_OPEN_HOURS * 3600:
+        return False
+    for t, o, h, l, c in m15_closed:
+        if t < sig_end:
+            continue
+        hi = h - offset
+        lo = l - offset
+        if last_dir == "صعودی":
+            if lo <= last_sl:
+                return False
+            if hi >= last_tp:
+                return False
+        else:
+            if hi >= last_sl:
+                return False
+            if lo <= last_tp:
+                return False
+    return True
+
+
 def analyze():
-    last_dir, last_entry, last_sent_time = load_last()
+    last_dir, last_entry, last_sent_time, last_sl, last_tp, last_sig_end = load_last()
 
     url = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1h&range=1mo"
     r = requests.get(url, headers=headers, timeout=20)
@@ -193,35 +222,36 @@ def analyze():
     print("روند ۱ ساعته:", trend1)
     if has_signal:
         entry_spot = round(entry - offset, 1)
+        sl_spot = round(sl - offset, 1)
+        tp_spot = round(tp - offset, 1)
         print("جهت احتمالی:", trend4)
         print("Entry:", entry_spot)
-        print("SL:", round(sl - offset, 1))
-        print("TP:", round(tp - offset, 1))
+        print("SL:", sl_spot)
+        print("TP:", tp_spot)
         print("ریسک:", round(risk, 1))
         print("ریسک به ریوارد: 1 به 2")
 
         should_send = False
         if trend4 != last_dir:
             should_send = True
-        elif abs(entry_spot - last_entry) > ENTRY_DIFF:
-            should_send = True
-        elif now - last_sent_time > MAX_HOURS * 3600:
+        elif previous_open(last_dir, last_sl, last_tp, last_sig_end, m15_closed, offset, now):
+            print("سیگنال قبلی هنوز باز است (نه TP نه SL)، سیگنال جدید نفرستادم")
+        else:
             should_send = True
 
         if should_send:
             msg = (
                 "جهت احتمالی: " + trend4 + "\n"
                 + "Entry: " + str(entry_spot) + "\n"
-                + "SL: " + str(round(sl - offset, 1)) + "\n"
-                + "TP: " + str(round(tp - offset, 1)) + "\n"
+                + "SL: " + str(sl_spot) + "\n"
+                + "TP: " + str(tp_spot) + "\n"
                 + "ریسک: " + str(round(risk, 1)) + "\n"
                 + "کندل ۱۵ دقیقه (UTC): " + last_time + "\n"
                 + "این فقط تحلیل است، سیگنال معامله نیست"
             )
             send_notify(msg)
-            save_last(trend4, entry_spot, now)
-        else:
-            print("اعلان تکراری است، نفرستادم")
+            sig_end = m15_closed[-1][0] + 900
+            save_last(trend4, entry_spot, now, sl_spot, tp_spot, sig_end)
     else:
         print("NO TRADE")
         print("دلیل:", reason)
