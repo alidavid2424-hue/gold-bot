@@ -6,35 +6,61 @@ headers = {"User-Agent": "Mozilla/5.0"}
 
 MIN_RISK = 6.0
 MAX_OPEN_HOURS = 48
+RISK_PER_SIGNAL = 1.5
+RR = 2.0
+DAILY_LIMIT = 3.0
+TOTAL_LIMIT = 10.0
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 NTFY_URL = "https://ntfy.sh/" + NTFY_TOPIC
 STATE_FILE = "last_signal.txt"
 
 
-def load_last():
-    # فرمت: جهت|ورود|زمان ارسال|SL|TP|پایان کندل سیگنال
+def day_of(t):
+    return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d")
+
+
+def load_state():
+    # فرمت: جهت|ورود|زمان ارسال|SL|TP|پایان کندل سیگنال|شمرده شده|کل|روز|ضرر روز
+    st = {
+        "dir": "", "entry": 0.0, "sent": 0.0, "sl": 0.0, "tp": 0.0,
+        "sig_end": 0.0, "counted": 0.0, "total": 0.0, "day": "", "day_r": 0.0
+    }
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             text = f.read().strip()
     except Exception:
-        return "", 0.0, 0.0, 0.0, 0.0, 0.0
+        return st
     parts = text.split("|")
-    if len(parts) == 6:
+    st["dir"] = parts[0]
+    if len(parts) >= 6:
         try:
-            return (parts[0], float(parts[1]), float(parts[2]),
-                    float(parts[3]), float(parts[4]), float(parts[5]))
+            st["entry"] = float(parts[1])
+            st["sent"] = float(parts[2])
+            st["sl"] = float(parts[3])
+            st["tp"] = float(parts[4])
+            st["sig_end"] = float(parts[5])
+            st["counted"] = st["sig_end"]
         except Exception:
-            return parts[0], 0.0, 0.0, 0.0, 0.0, 0.0
-    # فرمت قدیمی (بدون SL و TP): فقط جهت را نگه می‌داریم
-    return parts[0], 0.0, 0.0, 0.0, 0.0, 0.0
+            pass
+    if len(parts) >= 10:
+        try:
+            st["counted"] = float(parts[6])
+            st["total"] = float(parts[7])
+            st["day"] = parts[8]
+            st["day_r"] = float(parts[9])
+        except Exception:
+            pass
+    return st
 
 
-def save_last(direction, entry, sent_time, sl, tp, sig_end):
+def save_state(st):
     try:
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             f.write(
-                direction + "|" + str(entry) + "|" + str(sent_time) + "|"
-                + str(sl) + "|" + str(tp) + "|" + str(sig_end)
+                st["dir"] + "|" + str(st["entry"]) + "|" + str(st["sent"]) + "|"
+                + str(st["sl"]) + "|" + str(st["tp"]) + "|" + str(st["sig_end"]) + "|"
+                + str(st["counted"]) + "|" + str(st["total"]) + "|"
+                + st["day"] + "|" + str(st["day_r"])
             )
     except Exception as e:
         print("خطا در ذخیره وضعیت:", e)
@@ -56,32 +82,57 @@ def send_notify(text):
         print("خطا در ارسال اعلان:", e)
 
 
-def previous_open(last_dir, last_sl, last_tp, sig_end, m15_closed, offset, now):
-    # True یعنی سیگنال قبلی هنوز باز است (نه TP خورده نه SL)
-    if last_dir == "" or last_sl == 0 or last_tp == 0 or sig_end == 0:
-        return False
-    if now - sig_end > MAX_OPEN_HOURS * 3600:
-        return False
+def previous_status(st, m15_closed, offset, now):
+    # نتیجه: none / open / SL / TP / expired
+    if st["dir"] == "" or st["sl"] == 0 or st["tp"] == 0 or st["sig_end"] == 0:
+        return "none", 0
     for t, o, h, l, c in m15_closed:
-        if t < sig_end:
+        if t < st["sig_end"]:
             continue
         hi = h - offset
         lo = l - offset
-        if last_dir == "صعودی":
-            if lo <= last_sl:
-                return False
-            if hi >= last_tp:
-                return False
+        if st["dir"] == "صعودی":
+            if lo <= st["sl"]:
+                return "SL", t + 900
+            if hi >= st["tp"]:
+                return "TP", t + 900
         else:
-            if hi >= last_sl:
-                return False
-            if lo <= last_tp:
-                return False
+            if hi >= st["sl"]:
+                return "SL", t + 900
+            if lo <= st["tp"]:
+                return "TP", t + 900
+    if now - st["sig_end"] > MAX_OPEN_HOURS * 3600:
+        return "expired", 0
+    return "open", 0
+
+
+def update_risk(st, status, close_t):
+    # اگر نتیجه سیگنال قبلی تازه معلوم شده، به حساب ضرر و سود اضافه می‌کند
+    if st["dir"] == "" or st["sig_end"] == 0:
+        return False
+    if st["counted"] == st["sig_end"]:
+        return False
+    if status == "expired":
+        st["counted"] = st["sig_end"]
+        return True
+    if status != "SL" and status != "TP":
+        return False
+    if status == "SL":
+        pnl = -RISK_PER_SIGNAL
+    else:
+        pnl = RR * RISK_PER_SIGNAL
+    day = day_of(close_t)
+    if st["day"] != day:
+        st["day"] = day
+        st["day_r"] = 0.0
+    st["day_r"] += pnl
+    st["total"] += pnl
+    st["counted"] = st["sig_end"]
     return True
 
 
 def analyze():
-    last_dir, last_entry, last_sent_time, last_sl, last_tp, last_sig_end = load_last()
+    st = load_state()
 
     url = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1h&range=1mo"
     r = requests.get(url, headers=headers, timeout=20)
@@ -110,6 +161,7 @@ def analyze():
         blocks.setdefault(key, []).append((t, o, h, l, c))
 
     now = datetime.now(timezone.utc).timestamp()
+    today = day_of(now)
 
     candles4h = []
     for key in sorted(blocks):
@@ -186,6 +238,18 @@ def analyze():
     closes15 = [c for c in q15["close"] if c is not None]
     offset = closes15[-1] - spot
 
+    # نتیجه سیگنال قبلی و حساب ضرر و سود
+    status, close_t = previous_status(st, m15_closed, offset, now)
+    if update_risk(st, status, close_t):
+        save_state(st)
+
+    day_r_today = st["day_r"] if st["day"] == today else 0.0
+    blocked_reason = ""
+    if st["total"] <= -TOTAL_LIMIT:
+        blocked_reason = "حد ضرر کل ۱۰٪ خورده"
+    elif day_r_today <= -DAILY_LIMIT:
+        blocked_reason = "حد ضرر روزانه ۳٪ خورده"
+
     has_signal = False
     reason = "۴ ساعته و ۱ ساعته هم‌جهت نیستند"
     entry = 0
@@ -220,6 +284,9 @@ def analyze():
     print("فرق آتی و اسپات:", round(offset, 1))
     print("روند ۴ ساعته:", trend4)
     print("روند ۱ ساعته:", trend1)
+    print("سیگنال قبلی:", status)
+    print("سود/ضرر امروز (٪):", round(day_r_today, 1))
+    print("سود/ضرر کل (٪):", round(st["total"], 1))
     if has_signal:
         entry_spot = round(entry - offset, 1)
         sl_spot = round(sl - offset, 1)
@@ -231,27 +298,36 @@ def analyze():
         print("ریسک:", round(risk, 1))
         print("ریسک به ریوارد: 1 به 2")
 
-        should_send = False
-        if trend4 != last_dir:
-            should_send = True
-        elif previous_open(last_dir, last_sl, last_tp, last_sig_end, m15_closed, offset, now):
-            print("سیگنال قبلی هنوز باز است (نه TP نه SL)، سیگنال جدید نفرستادم")
+        if blocked_reason:
+            print("NO TRADE:", blocked_reason)
+            print("اعلان نفرستادم")
         else:
-            should_send = True
+            should_send = False
+            if trend4 != st["dir"]:
+                should_send = True
+            elif status == "open":
+                print("سیگنال قبلی هنوز باز است (نه TP نه SL)، سیگنال جدید نفرستادم")
+            else:
+                should_send = True
 
-        if should_send:
-            msg = (
-                "جهت احتمالی: " + trend4 + "\n"
-                + "Entry: " + str(entry_spot) + "\n"
-                + "SL: " + str(sl_spot) + "\n"
-                + "TP: " + str(tp_spot) + "\n"
-                + "ریسک: " + str(round(risk, 1)) + "\n"
-                + "کندل ۱۵ دقیقه (UTC): " + last_time + "\n"
-                + "این فقط تحلیل است، سیگنال معامله نیست"
-            )
-            send_notify(msg)
-            sig_end = m15_closed[-1][0] + 900
-            save_last(trend4, entry_spot, now, sl_spot, tp_spot, sig_end)
+            if should_send:
+                msg = (
+                    "جهت احتمالی: " + trend4 + "\n"
+                    + "Entry: " + str(entry_spot) + "\n"
+                    + "SL: " + str(sl_spot) + "\n"
+                    + "TP: " + str(tp_spot) + "\n"
+                    + "ریسک: " + str(round(risk, 1)) + "\n"
+                    + "کندل ۱۵ دقیقه (UTC): " + last_time + "\n"
+                    + "این فقط تحلیل است، سیگنال معامله نیست"
+                )
+                send_notify(msg)
+                st["dir"] = trend4
+                st["entry"] = entry_spot
+                st["sent"] = now
+                st["sl"] = sl_spot
+                st["tp"] = tp_spot
+                st["sig_end"] = m15_closed[-1][0] + 900
+                save_state(st)
     else:
         print("NO TRADE")
         print("دلیل:", reason)
