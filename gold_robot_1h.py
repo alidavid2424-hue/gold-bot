@@ -7,6 +7,11 @@ headers = {"User-Agent": "Mozilla/5.0"}
 MIN_RISK = 6.0
 MAX_RISK = 60.0
 MAX_AGE = 9000
+MAX_OPEN_HOURS = 48
+ACCOUNT = 1000.0
+RISK_PERCENT = 1.5
+RISK_DOLLAR = ACCOUNT * RISK_PERCENT / 100
+OUNCE_PER_LOT = 100
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 NTFY_URL = "https://ntfy.sh/" + NTFY_TOPIC
 STATE_FILE = "last_signal_1h.txt"
@@ -15,17 +20,35 @@ STATE_FILE = "last_signal_1h.txt"
 def load_last():
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return f.read().strip()
+            parts = f.read().strip().split("|")
+        if len(parts) < 5:
+            return None
+        return {
+            "dir": parts[0],
+            "entry": float(parts[1]),
+            "sl": float(parts[2]),
+            "tp": float(parts[3]),
+            "end": float(parts[4]),
+        }
     except Exception:
-        return ""
+        return None
 
 
-def save_last(value):
+def save_last(direction, entry, sl, tp, end):
     try:
+        value = "|".join([direction, str(entry), str(sl), str(tp), str(end)])
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             f.write(value)
     except Exception as e:
         print("خطا در ذخیره وضعیت:", e)
+
+
+def clear_last():
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            f.write("")
+    except Exception as e:
+        print("خطا در پاک کردن وضعیت:", e)
 
 
 def send_notify(text):
@@ -65,9 +88,26 @@ def trend_of(candles):
     return "خنثی"
 
 
-def analyze():
-    last_signal = load_last()
+def check_open(last, hourly, now):
+    if now - last["end"] > MAX_OPEN_HOURS * 3600:
+        return False, "منقضی شد (بیش از 48 ساعت)"
+    for t, o, h, l, c in hourly:
+        if t < last["end"]:
+            continue
+        if last["dir"] == "صعودی":
+            if l <= last["sl"]:
+                return False, "SL خورد"
+            if h >= last["tp"]:
+                return False, "TP خورد"
+        else:
+            if h >= last["sl"]:
+                return False, "SL خورد"
+            if l <= last["tp"]:
+                return False, "TP خورد"
+    return True, "هنوز باز است"
 
+
+def analyze():
     url = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1h&range=1mo"
     r = requests.get(url, headers=headers, timeout=20)
     print("status:", r.status_code)
@@ -91,6 +131,15 @@ def analyze():
 
     now = datetime.now(timezone.utc).timestamp()
 
+    last = load_last()
+    prev_text = "ندارد"
+    if last is not None:
+        is_open, status = check_open(last, hourly, now)
+        prev_text = last["dir"] + " - " + status
+        if not is_open:
+            clear_last()
+            last = None
+
     blocks = {}
     for t, o, h, l, c in hourly:
         key = t // 14400
@@ -112,7 +161,8 @@ def analyze():
     trend4 = trend_of(candles4h[-6:])
     trend1 = trend_of(h_closed[-6:])
 
-    age = now - (h_closed[-1][0] + 3600)
+    end_time = h_closed[-1][0] + 3600
+    age = now - end_time
     print("سن آخرین کندل بسته (دقیقه):", int(age / 60))
 
     rs = requests.get("https://api.gold-api.com/price/XAU", timeout=20)
@@ -158,32 +208,35 @@ def analyze():
     print("فرق آتی و اسپات:", round(offset, 1))
     print("روند ۴ ساعته:", trend4)
     print("روند ۱ ساعته:", trend1)
+    print("سیگنال قبلی:", prev_text)
     if has_signal:
+        lot = round(RISK_DOLLAR / (risk * OUNCE_PER_LOT), 3)
         print("جهت احتمالی:", trend4)
         print("Entry:", round(entry - offset, 1))
         print("SL:", round(sl - offset, 1))
         print("TP:", round(tp - offset, 1))
         print("ریسک:", round(risk, 1))
         print("ریسک به ریوارد: 1 به 2")
-        if trend4 != last_signal:
+        print("ریسک پولی:", RISK_DOLLAR, "دلار - لات:", lot)
+        if last is not None and last["dir"] == trend4:
+            print("سیگنال قبلی هم‌جهت هنوز باز است، سیگنال جدید نفرستادم")
+        else:
             msg = (
                 "جهت احتمالی: " + trend4 + "\n"
                 + "Entry: " + str(round(entry - offset, 1)) + "\n"
                 + "SL: " + str(round(sl - offset, 1)) + "\n"
                 + "TP: " + str(round(tp - offset, 1)) + "\n"
                 + "ریسک: " + str(round(risk, 1)) + "\n"
+                + "ریسک پولی: " + str(RISK_DOLLAR) + " دلار (" + str(RISK_PERCENT) + "٪)\n"
+                + "لات: " + str(lot) + "\n"
                 + "کندل ۱ ساعته (UTC): " + last_time + "\n"
                 + "این فقط تحلیل است، سیگنال معامله نیست"
             )
             send_notify(msg)
-            save_last(trend4)
-        else:
-            print("اعلان تکراری است، نفرستادم")
+            save_last(trend4, entry, sl, tp, end_time)
     else:
         print("NO TRADE")
         print("دلیل:", reason)
-        if age <= MAX_AGE:
-            save_last("")
     print("این فقط تحلیل است، سیگنال معامله نیست")
     print("===============================")
 
