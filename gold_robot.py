@@ -210,6 +210,9 @@ def analyze():
 
     trend4 = "صعودی" if (hh >= 3 and hl >= 3) else ("نزولی" if (lh >= 3 and ll >= 3) else "خنثی")
     trend1 = "صعودی" if (hh1 >= 3 and hl1 >= 3) else ("نزولی" if (lh1 >= 3 and ll1 >= 3) else "خنثی")
+    trend4_real = trend4
+    if trend4 == "خنثی":
+        trend4 = trend1
 
     url15 = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=15m&range=5d"
     r15 = requests.get(url15, headers=headers, timeout=20)
@@ -282,7 +285,7 @@ def analyze():
     print("آخرین کندل بسته ۱۵ دقیقه (UTC):", last_time)
     print("قیمت اسپات الان:", round(spot, 1))
     print("فرق آتی و اسپات:", round(offset, 1))
-    print("روند ۴ ساعته:", trend4)
+    print("روند ۴ ساعته:", trend4_real)
     print("روند ۱ ساعته:", trend1)
     print("سیگنال قبلی:", status)
     print("سود/ضرر امروز (٪):", round(day_r_today, 1))
