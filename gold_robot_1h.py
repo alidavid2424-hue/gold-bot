@@ -160,6 +160,9 @@ def analyze():
 
     trend4 = trend_of(candles4h[-6:])
     trend1 = trend_of(h_closed[-6:])
+    trend4_real = trend4
+    if trend4 == "خنثی":
+        trend4 = trend1
 
     end_time = h_closed[-1][0] + 3600
     age = now - end_time
@@ -206,7 +209,7 @@ def analyze():
     print("آخرین کندل بسته ۱ ساعته (UTC):", last_time)
     print("قیمت اسپات الان:", round(spot, 1))
     print("فرق آتی و اسپات:", round(offset, 1))
-    print("روند ۴ ساعته:", trend4)
+    print("روند ۴ ساعته:", trend4_real)
     print("روند ۱ ساعته:", trend1)
     print("سیگنال قبلی:", prev_text)
     if has_signal:
